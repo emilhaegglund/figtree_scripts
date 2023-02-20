@@ -3,6 +3,7 @@ Script to midpoint-root phylogenies and collapse clades for
 visualization in FigTree
 """
 import argparse
+import sys
 import pandas as pd
 from ete3 import Tree
 
@@ -18,6 +19,8 @@ def loc_write_newick(rootnode, format_root_node=True, is_leaf_fn=None):
     for postorder, node in rootnode.iter_prepostorder(is_leaf_fn=is_leaf_fn):
         if postorder:
             newick.append(")")
+            if node.is_leaf():
+                print("Node is leag")
             if node.up is not None or format_root_node:
                 if node.collapse:
                     newick.append(
@@ -26,9 +29,7 @@ def loc_write_newick(rootnode, format_root_node=True, is_leaf_fn=None):
                         + str(node.support)
                         + ',!collapse={"collapsed",'
                         + str(node.length)
-                        + '},gtdb_taxonomy="'
-                        + node.label
-                        + '",!name="'
+                        + '},!name="'
                         + node.label
                         + '"]:'
                         + str(node.dist)
@@ -36,22 +37,41 @@ def loc_write_newick(rootnode, format_root_node=True, is_leaf_fn=None):
                 else:
                     newick.append(
                         node.name
-                        + "[&label="
+                        + '[&label='
                         + str(node.support)
-                        + "]:"
+                        + ']:'
                         + str(node.dist)
                     )
         else:
             if node is not rootnode and node != node.up.children[0]:
                 newick.append(",")
             if leaf(node):
-                newick.append("'" + node.name + "':" + str(node.dist))
+                newick.append("'" + node.label + "':" + str(node.dist))
             else:
                 newick.append("(")
 
     newick.append(";")
     return "".join(newick)
 
+def create_label(node_annotation, n_taxa, column, leaf):
+    """
+    Create annotation string
+    """
+    label = []
+    if leaf:
+        annotation_columns = node_annotation.columns
+    else:
+        annotation_columns = node_annotation.columns[1:]
+    for c in annotation_columns:
+        label.append(node_annotation[c].iat[0])
+        if c == column and not leaf:
+            break
+    label_str = "_".join(label)
+    
+    if not leaf:
+        label_str = label_str + "_(" + str(n_taxa) + ")"
+    
+    return label_str
 
 def write_tree(nexus_tree, figtree_settings, output):
     with open(output, "w") as f:
@@ -84,13 +104,18 @@ def parse_command_line():
         required=True,
         help="""
             TSV-file with annotation for the taxa, first column must contain
-            the accessions of taxa in phylogeny, remaining columns can be
-            taxonomic information or other data.""",
+            the accession and the following columns should be
+            taxonomic information on the format domain, phylum, class, order, family, genus, and species""",
     )
     args.add_argument(
         "--column",
         "-c",
+        required=True,
         help="Name of the column in the TSV to use for determine monophyly, default will use second column",
+    )
+    args.add_argument(
+        "--headers",
+        help="Comma-separated list of header to use for collapsing and annotation"
     )
     args.add_argument(
         "--taxa",
@@ -99,22 +124,50 @@ def parse_command_line():
         default=3,
         help="Minimal number of monophyletic taxa to collapse a node",
     )
-    args.add_argument("--figtree-settings", "-s", required=True)
+    args.add_argument("--figtree-settings", "-s", required=True, help="""FigTree Display settings, the file in the example directory of the repo can be used.""")
     args.add_argument("--output", "-o", required=True, help="Path to output file")
 
     return args.parse_args()
 
+
+def filter_tsv(df, taxa_columns):
+    """
+    Filter the dataframe so it only contains columns
+    to use for collapse and annotation.
+
+    Returns the dataframe with the columns in the same
+    order as the items in the taxa_columns.
+    """
+    accession_column = df.columns[0]
+    df = df[[accession_column] + taxa_columns]
+    return df
+
+
+def check_tsv(df, taxa_columns):
+    """
+    Check that the selected columns to use for collapsing and
+    annotation is present in the dataframe.
+    """
+    if set(taxa_columns).issubset(df.columns):
+        return True
+    else:
+        return False
 
 args = parse_command_line()
 tree = Tree(args.tree)
 annotation = pd.read_csv(args.annotation, sep="\t")
 
 
-if args.column:
-    column = args.column
+column = args.column
+if args.headers:
+    taxa_columns = args.headers.split(",")
 else:
-    column = annotation.columns[1]
-    print(column)
+    taxa_columns = ["domain", "phylum", "class", "order", "family", "genus", "species"]
+
+if check_tsv(annotation, taxa_columns):
+    annotation = filter_tsv(annotation, taxa_columns)
+else:
+    sys.exit("TSV-file does not include required columns")
 
 output = args.output
 min_taxa = args.taxa
@@ -156,12 +209,12 @@ for node in tree.traverse():
         far_leaf = node.get_farthest_leaf()
         length = dist[1] - (root_dist + far_leaf[1])
         node.length = length
-        node.label = (
-            node_annotation[column].iat[0] + " (" + str(node_annotation.shape[0]) + ")"
-        )
+        node.label = (create_label(node_annotation, n_taxa=n_taxa, column=column, leaf=False))
         print("Collapsed " + node.label)
     else:
         node.collapse = False
+        node.label = (create_label(node_annotation, n_taxa=1, column=column, leaf=True))
+        print("Not collapsed " + node.label)
 
 # Read FigTree-settings
 figtree_settings_block = []
