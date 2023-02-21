@@ -157,6 +157,8 @@ args = parse_command_line()
 tree = Tree(args.tree)
 annotation = pd.read_csv(args.annotation, sep="\t")
 
+if args.column not in annotation.columns:
+    sys.exit(f"Column '{args.column}' is not present in the annotation file")
 
 column = args.column
 if args.headers:
