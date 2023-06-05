@@ -22,11 +22,13 @@ def loc_write_newick(rootnode, format_root_node=True, is_leaf_fn=None):
             if node.is_leaf():
                 print("Node is leag")
             if node.up is not None or format_root_node:
+                if "/" in node.name:
+                    node.support = float(node.name.split("/")[1])
                 if node.collapse:
                     newick.append(
-                        node.name
-                        + "[&label="
-                        + str(node.support)
+                        #node.name
+                        "[&label="
+                        + '"' + str(node.name) + '"'
                         + ',!collapse={"collapsed",'
                         + str(node.length)
                         + '},!name="'
@@ -36,9 +38,9 @@ def loc_write_newick(rootnode, format_root_node=True, is_leaf_fn=None):
                     )
                 else:
                     newick.append(
-                        node.name
-                        + '[&label='
-                        + str(node.support)
+                        #node.name
+                        '[&label='
+                        + '"' + str(node.name) + '"'
                         + ']:'
                         + str(node.dist)
                     )
@@ -66,11 +68,11 @@ def create_label(node_annotation, n_taxa, column, leaf):
         label.append(node_annotation[c].iat[0])
         if c == column and not leaf:
             break
-    label_str = "_".join(label)
-    
+    label_str = "_".join(label[1:])
+
     if not leaf:
         label_str = label_str + "_(" + str(n_taxa) + ")"
-    
+
     return label_str
 
 def write_tree(nexus_tree, figtree_settings, output):
@@ -125,6 +127,7 @@ def parse_command_line():
         help="Minimal number of monophyletic taxa to collapse a node",
     )
     args.add_argument("--figtree-settings", "-s", required=True, help="""FigTree Display settings, the file in the example directory of the repo can be used.""")
+    args.add_argument("--midpoint-root", "-m", action='store_true', help="Midpoint root the phylogeny before collapsing nodes.")
     args.add_argument("--output", "-o", required=True, help="Path to output file")
 
     return args.parse_args()
@@ -154,7 +157,7 @@ def check_tsv(df, taxa_columns):
         return False
 
 args = parse_command_line()
-tree = Tree(args.tree)
+tree = Tree(args.tree, format=1)
 annotation = pd.read_csv(args.annotation, sep="\t")
 
 if args.column not in annotation.columns:
@@ -171,13 +174,69 @@ if check_tsv(annotation, taxa_columns):
 else:
     sys.exit("TSV-file does not include required columns")
 
+
+if annotation.columns[0] != 'taxa':
+    annotation.rename(columns={annotation.columns[0]:'taxa'}, inplace=True)
 output = args.output
 min_taxa = args.taxa
 figtree_settings = args.figtree_settings
 
-# Midpoint-root
-R = tree.get_midpoint_outgroup()
-tree.set_outgroup(R)
+if args.midpoint_root:
+## QUICK-FIX to resolve issue with moving support values
+# on midpoint root.
+
+# Store clades and support values from orig phylo
+    node_support = {}
+    for node in tree.traverse():
+        if not node.is_leaf() and not node.is_root():
+            node_leafs = frozenset(node.get_leaves())
+            hash_node_leafs = hash(node_leafs)
+            if hash_node_leafs not in node_support.keys():
+                node_support[hash_node_leafs] = node.name
+
+# Midpoint root
+    R = tree.get_midpoint_outgroup()
+    tree.set_outgroup(R)
+
+# Find support values that has been wrongly placed
+    wrongly_placed_supports = []
+    er_nodes = []
+    for node in tree.traverse():
+        if not node.is_leaf() and not node.is_root():
+            node_leafs = frozenset(node.get_leaves())
+            hash_node_leafs = hash(node_leafs)
+            if hash_node_leafs not in node_support.keys():
+                wrongly_placed_supports.append(node.name)
+                er_nodes.append(node)
+                print(node.name)
+
+# Find the node with missing support
+    for node in tree.traverse():
+        if not node.is_leaf() and not node.is_root():
+            if node.name == '':
+                missing_node = node
+                break
+
+    wrongly_placed_supports = [s for s in wrongly_placed_supports if s != '']
+# Starting from node with missing value,
+# add values from the list and continue up
+# until the list is empty
+    while len(wrongly_placed_supports) != 0:
+        missing_node.name = wrongly_placed_supports[-1]
+        print(missing_node.name)
+        wrongly_placed_supports.pop(-1)
+        missing_node = missing_node.up
+
+    root = tree.get_tree_root()
+    root_children =  root.get_children()
+    for node in root_children:
+        if node not in er_nodes:
+            tmp_support = node.name
+    for node in root_children:
+        if node in er_nodes:
+            node.name = tmp_support
+
+##### End fix #####
 
 # This is reference dist for triangles
 dist = tree.get_farthest_leaf()
@@ -217,6 +276,11 @@ for node in tree.traverse():
         node.collapse = False
         node.label = (create_label(node_annotation, n_taxa=1, column=column, leaf=True))
         print("Not collapsed " + node.label)
+        if not monophyletic:
+            print("Not monophyletic")
+        if min_taxa > n_taxa:
+            print('Not enough taxa')
+
 
 # Read FigTree-settings
 figtree_settings_block = []
